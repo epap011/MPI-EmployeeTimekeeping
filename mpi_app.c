@@ -13,7 +13,8 @@ void print_array(int *array, int size);
 int element_exists(int *array, int size, int element);
 int find_not_received_neighbour(int *neighbours, int *received_from_neighbours);
 
-enum message_type {CONNECT, REGISTER, START_LEADER_ELECTION_CLIENTS, ELECT, LEADER_BATTLE, NEW_NEIGHBOUR, ACK};
+enum message_type {CONNECT, REGISTER, START_LEADER_ELECTION_CLIENTS, ELECT, LEADER_BATTLE, NEW_NEIGHBOUR, ACK
+		, LEADER_ELECTION_CLIENTS_DONE, LEADER_ANNOUNCEMENT, LEADER_ANNOUNCEMENT_ACK};
 
 int main(int argc, char** argv) {
 	
@@ -24,6 +25,8 @@ int main(int argc, char** argv) {
 		printf("[ERROR] Invalid number of arguments..\n");
 		return -1;
 	}
+
+	int num_of_servers = atoi(argv[1]) * atoi(argv[1]);
 
 	// Initialize the MPI environment
 	MPI_Init(NULL, NULL);
@@ -37,12 +40,13 @@ int main(int argc, char** argv) {
 	MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
 	
 	int rec_data, rec_tag, dummy = 0, neighbour_rank, sent_elect_count = 0, received_elect_count = 0, senter_rank, i_received_from_neighbours = 0;
+	int leader_rank = 0, leader_announcement_received_acks = 0, leader_announcement_senter;
 	MPI_Status status;
-	if(world_rank == 0) {
+	if(world_rank == 0) { //coordinator code
 		exec_test_file(argv[2]);
 		while(1){}
 	}
-	else {
+	else if(world_rank > num_of_servers) { //clients code
 		init_array(neighbours, MAX_NEIGHBOURS);
 		init_array(received_from_neighbours, MAX_NEIGHBOURS);
 		while(1) {
@@ -105,10 +109,37 @@ int main(int argc, char** argv) {
 					printf("Process %d received <LEADER_BATTLE> from process %d\n", world_rank, senter_rank);
 					if(world_rank > senter_rank) {
 						printf("Process %d IM THE LEADER MUHAHAH\n", world_rank);
-						MPI_Send(&world_rank, 1, MPI_INT, 0, LEADER_ELECTION_CLIENTS_DONE, MPI_COMM_WORLD);
+						for(int i = 0; i < MAX_NEIGHBOURS; i++) {
+							if(neighbours[i] == -1) break;
+							MPI_Send(&world_rank, 1, MPI_INT, neighbours[i], LEADER_ANNOUNCEMENT, MPI_COMM_WORLD);
+						}
 					}
+					break;
+				
+				case LEADER_ANNOUNCEMENT:
+					leader_announcement_senter = senter_rank;
+					for(int i = 0; i < MAX_NEIGHBOURS; i++) {
+						if(neighbours[i] == -1) break;
+						MPI_Send(&rec_data, 1, MPI_INT, neighbours[i], LEADER_ANNOUNCEMENT, MPI_COMM_WORLD);
+					}
+					//send this message to my neighbours except the one that i received
+
+				case LEADER_ANNOUNCEMENT_ACK:
+					leader_announcement_received_acks++;
+					if(leader_announcement_received_acks == number_of_neighbours) {
+						if(world_rank == rec_data) {
+							MPI_Send(&world_rank, 1, MPI_INT, 0, LEADER_ELECTION_CLIENTS_DONE, MPI_COMM_WORLD);
+						}
+						else {
+							MPI_Send(&world_rank, 1, MPI_INT, senter_rank, LEADER_ANNOUNCEMENT_ACK, MPI_COMM_WORLD);
+						}
+					}
+					break;
 			}
 		}
+	}
+	else { //servers code
+
 	}
 
 	// Finalize the MPI environmen
@@ -132,6 +163,7 @@ void exec_test_file(char* test_file_name) {
 
 	int client_rank, neighbour_rank, dummy = 0, i, client_i = 0, server_i = 0;
 	int client_processes[MAX_CLIENT_PROCESSES], server_processes[MAX_SERVER_PROCESSES];
+	int clients_leader_rank = -1;
 	init_array(client_processes, MAX_CLIENT_PROCESSES);
 	init_array(server_processes, MAX_SERVER_PROCESSES);
 	
@@ -151,6 +183,8 @@ void exec_test_file(char* test_file_name) {
 				if(client_processes[i] == -1) break;
 				MPI_Send(&dummy, 1, MPI_INT, client_processes[i], START_LEADER_ELECTION_CLIENTS, MPI_COMM_WORLD);
 			}
+			MPI_Recv(&clients_leader_rank, 1, MPI_INT, MPI_ANY_SOURCE, LEADER_ELECTION_CLIENTS_DONE, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			printf("Coordinator received <LEADER_ELECTION_CLIENTS_DONE | client leader %d\n", clients_leader_rank);
 		}
 		else if(strcmp(token, "REGISTER")==0) {
 			MPI_Send(&dummy, 1, MPI_INT, 1, REGISTER, MPI_COMM_WORLD);

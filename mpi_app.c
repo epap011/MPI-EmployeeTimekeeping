@@ -31,6 +31,7 @@ enum directions {LEFT, TOP, BOTTOM, RIGHT};
 
 struct RegisterMessage {
 	int type;
+	int client;
 	int responsibleServer;
 	char timestamp[20];
 };
@@ -71,14 +72,15 @@ int main(int argc, char** argv) {
 		while(1){}
 	}
 	else if(world_rank > num_of_servers) { //clients code
-		int blocklengths[3]   = {1, 1, 20};
-		MPI_Datatype types[3] = {MPI_INT, MPI_INT, MPI_CHAR};
-		MPI_Aint offsets[3];
+		int blocklengths[4]   = {1, 1, 1, 20};
+		MPI_Datatype types[4] = {MPI_INT, MPI_INT, MPI_INT, MPI_CHAR};
+		MPI_Aint offsets[4];
 		offsets[0] = offsetof(struct RegisterMessage, type);
-		offsets[1] = offsetof(struct RegisterMessage, responsibleServer);
-		offsets[2] = offsetof(struct RegisterMessage, timestamp);			
+		offsets[1] = offsetof(struct RegisterMessage, client);
+		offsets[2] = offsetof(struct RegisterMessage, responsibleServer);
+		offsets[3] = offsetof(struct RegisterMessage, timestamp);			
 		MPI_Datatype struct_type;
-		MPI_Type_create_struct(3, blocklengths, offsets, types, &struct_type);
+		MPI_Type_create_struct(4, blocklengths, offsets, types, &struct_type);
 		MPI_Type_commit(&struct_type);
 
 		init_array(neighbours, MAX_NEIGHBOURS);
@@ -89,7 +91,10 @@ int main(int argc, char** argv) {
 			senter_rank = status.MPI_SOURCE;
     			if (status.MPI_TAG == REGISTER) {
         			MPI_Recv(&register_data, 1, struct_type, MPI_ANY_SOURCE, REGISTER, MPI_COMM_WORLD, &status);
-    			} 
+    			}
+		        else if(status.MPI_TAG == ACK) {
+				MPI_Recv(&register_data, 1, struct_type, MPI_ANY_SOURCE, ACK, MPI_COMM_WORLD, &status);
+			}	
 			else {
 				MPI_Recv(&rec_data, 1, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 			}
@@ -109,6 +114,7 @@ int main(int argc, char** argv) {
 					break;
 
 				case ACK:
+					printf("received ack from %d\n", senter_rank);
 					MPI_Send(&dummy, 1, MPI_INT, 0, ACK, MPI_COMM_WORLD);
 					break;
 
@@ -157,23 +163,32 @@ int main(int argc, char** argv) {
 					break;
 				
 				case LEADER_ANNOUNCEMENT:
+					printf("Rank %d received <LEADER_ANNOUNCEMENT> from %d, where leader=%d\n", world_rank, senter_rank, rec_data);
 					leader_announcement_senter = senter_rank;
 					client_leader_rank = rec_data;
 					for(int i = 0; i < MAX_NEIGHBOURS; i++) {
 						if(neighbours[i] == -1) break;
+						if(neighbours[i] == senter_rank) continue;
 						MPI_Send(&rec_data, 1, MPI_INT, neighbours[i], LEADER_ANNOUNCEMENT, MPI_COMM_WORLD);
 					}
-					//send this message to my neighbours except the one that i received
+					if(neighbours[1] == -1 && world_rank != client_leader_rank) {
+						printf("Rank %d is leaf!\n", world_rank);
+						MPI_Send(&rec_data, 1, MPI_INT, senter_rank, LEADER_ANNOUNCEMENT_ACK, MPI_COMM_WORLD);
+					}
+					break;
 
 				case LEADER_ANNOUNCEMENT_ACK:
+					printf("Rank %d received <LEADER_ANNOUNCE_ACK>(%d/%d) from %d, where leader=%d\n", world_rank, leader_announcement_received_acks+1, number_of_neighbours, senter_rank, rec_data);
 					leader_announcement_received_acks++;
-					if(leader_announcement_received_acks == number_of_neighbours) {
-						if(world_rank == rec_data) {
-							MPI_Send(&world_rank, 1, MPI_INT, 0, LEADER_ELECTION_CLIENT_DONE, MPI_COMM_WORLD);
+					if(world_rank == client_leader_rank) {
+						if(leader_announcement_received_acks == number_of_neighbours) {
+							MPI_Send(&rec_data, 1, MPI_INT, 0, LEADER_ELECTION_CLIENT_DONE, MPI_COMM_WORLD);
+							printf("As leader %d i notified coordinator\n", rec_data);
 						}
-						else {
-							MPI_Send(&world_rank, 1, MPI_INT, senter_rank, LEADER_ANNOUNCEMENT_ACK, MPI_COMM_WORLD);
-						}
+					}
+					else {
+						if(leader_announcement_received_acks == number_of_neighbours-1)
+							MPI_Send(&rec_data, 1, MPI_INT, leader_announcement_senter, LEADER_ANNOUNCEMENT_ACK, MPI_COMM_WORLD);
 					}
 					break;
 
@@ -205,15 +220,16 @@ int main(int argc, char** argv) {
 	
 		struct RegisterMessage requests[100];
 		int request_i = 0;
-
-		int blocklengths[3]   = {1, 1, 20};
-		MPI_Datatype types[3] = {MPI_INT, MPI_INT, MPI_CHAR};
-		MPI_Aint offsets[3];
+		
+		int blocklengths[4]   = {1, 1, 1, 20};
+		MPI_Datatype types[4] = {MPI_INT, MPI_INT, MPI_INT, MPI_CHAR};
+		MPI_Aint offsets[4];
 		offsets[0] = offsetof(struct RegisterMessage, type);
-		offsets[1] = offsetof(struct RegisterMessage, responsibleServer);
-		offsets[2] = offsetof(struct RegisterMessage, timestamp);			
+		offsets[1] = offsetof(struct RegisterMessage, client);
+		offsets[2] = offsetof(struct RegisterMessage, responsibleServer);
+		offsets[3] = offsetof(struct RegisterMessage, timestamp);			
 		MPI_Datatype struct_type;
-		MPI_Type_create_struct(3, blocklengths, offsets, types, &struct_type);
+		MPI_Type_create_struct(4, blocklengths, offsets, types, &struct_type);
 		MPI_Type_commit(&struct_type);
 	
 		int children[4], my_next_server, *neighbours, parent = world_rank, children_i = 0, leader = world_rank;	
@@ -324,12 +340,12 @@ int main(int argc, char** argv) {
 					else {
 						if(register_data.responsibleServer == world_rank) {
 							printf("Rank %d i will save the request!\n", world_rank);
-							for(int i = 0; i < request_i; i++) printf("%s ",requests[i].timestamp);
-							printf("\n");
+							requests[request_i++] = register_data;
+							printf("requested client %d\n", requests[request_i].client);
+							MPI_Send(&register_data, 1, struct_type, requests[request_i].client, ACK, MPI_COMM_WORLD);
 						}
 						else {
 							MPI_Send(&register_data, 1, struct_type, my_next_server, REGISTER, MPI_COMM_WORLD);
-							requests[request_i++] = register_data;
 						}
 					}
 
@@ -415,7 +431,7 @@ void exec_test_file(char* test_file_name, int num_of_servers, int world_size) {
 			MPI_Recv(&clients_leader_rank, 1, MPI_INT, MPI_ANY_SOURCE, LEADER_ELECTION_CLIENT_DONE, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 			printf("Coordinator received <LEADER_ELECTION_CLIENT_DONE> | client leader %d\n", clients_leader_rank);
 		}
-		else if(strcmp(token, "REGISTER")==0) {
+		else if(strcmp(token, "_REGISTER")==0) {
 			client_rank = atoi(strtok(NULL, delims));
 			if(strcmp(strtok(NULL, delims), "IN") == 0) {
 				register_type = IN;
@@ -437,21 +453,25 @@ void exec_test_file(char* test_file_name, int num_of_servers, int world_size) {
 
 			struct RegisterMessage request;
 			
-			int blocklengths[3]   = {1, 1, 20};
-			MPI_Datatype types[3] = {MPI_INT, MPI_INT, MPI_CHAR};
-			MPI_Aint offsets[3];
+			int blocklengths[4]   = {1, 1, 1, 20};
+			MPI_Datatype types[4] = {MPI_INT, MPI_INT, MPI_INT, MPI_CHAR};
+			MPI_Aint offsets[4];
 			offsets[0] = offsetof(struct RegisterMessage, type);
-			offsets[1] = offsetof(struct RegisterMessage, responsibleServer);
-			offsets[2] = offsetof(struct RegisterMessage, timestamp);			
+			offsets[1] = offsetof(struct RegisterMessage, client);
+			offsets[2] = offsetof(struct RegisterMessage, responsibleServer);
+			offsets[3] = offsetof(struct RegisterMessage, timestamp);			
 			MPI_Datatype struct_type;
-			MPI_Type_create_struct(3, blocklengths, offsets, types, &struct_type);
-			MPI_Type_commit(&struct_type);	
+			MPI_Type_create_struct(4, blocklengths, offsets, types, &struct_type);
+			MPI_Type_commit(&struct_type);
 
-			request.type = register_type;
+			request.type   = register_type;
+			request.client = client_rank;
 			request.responsibleServer = -1;
 			strcpy(request.timestamp, time_date);
 			MPI_Send(&request, 1, struct_type, client_rank, REGISTER, MPI_COMM_WORLD);
-			//while(1){}
+
+			MPI_Recv(&request, 1, struct_type, MPI_ANY_SOURCE, ACK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			printf("CLIENT %d REGISTERED %d %s\n", request.client, request.type, request.timestamp);
 		}
             	token = strtok(NULL, delims);
         }

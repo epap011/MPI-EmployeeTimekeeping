@@ -18,23 +18,6 @@
 #define KCYN  "\x1B[36m"
 #define KMAG  "\x1B[35m"
 
-void exec_test_file(char* test_file_name, int num_of_servers, int world_size);
-void init_array(int *array, int size);
-void print_array(int *array, int size);
-int element_exists(int *array, int size, int element);
-int find_not_received_neighbour(int *neighbours, int *received_from_neighbours);
-int find_my_next_server(int world_rank, int num_of_servers);
-int* init_torus_neighbours(int world_rank, int servers_num);
-int explore(int *unexplored, int world_rank, int parent, int leader, int exception);
-void clear_char_array(char *array, int size);
-
-enum message_type {CONNECT, REGISTER, START_LEADER_ELECTION_CLIENTS, START_LEADER_ELECTION_SERVERS, ELECT, LEADER_BATTLE, 
-	NEW_NEIGHBOUR, ACK, LEADER_ELECTION_CLIENT_DONE, LEADER_ELECTION_SERVER_DONE, LEADER_ANNOUNCEMENT, LEADER_ANNOUNCEMENT_ACK,
-	LEADER, PARENT, ALREADY, SERVER_LEADER, SYNC, SYNC_ACK, OVERTIME, SEARCHING_CLIENT, CLIENT_FOUND};
-
-enum register_type {IN, OUT};
-enum directions {LEFT, TOP, BOTTOM, RIGHT};
-
 struct RegisterMessage {
 	int type;
 	int client;
@@ -52,6 +35,24 @@ struct SearchingClientTimestampMessage {
 	int client;
 	char timestamp[20];
 };
+
+void exec_test_file(char* test_file_name, int num_of_servers, int world_size);
+void init_array(int *array, int size);
+void print_array(int *array, int size);
+int element_exists(int *array, int size, int element);
+int find_not_received_neighbour(int *neighbours, int *received_from_neighbours);
+int find_my_next_server(int world_rank, int num_of_servers);
+int* init_torus_neighbours(int world_rank, int servers_num);
+int explore(int *unexplored, int world_rank, int parent, int leader, int exception);
+void clear_char_array(char *array, int size);
+int isClientExistAsRegistered(struct RegisterMessage *requests, int size, int client); 
+
+enum message_type {CONNECT, REGISTER, START_LEADER_ELECTION_CLIENTS, START_LEADER_ELECTION_SERVERS, ELECT, LEADER_BATTLE, 
+	NEW_NEIGHBOUR, ACK, LEADER_ELECTION_CLIENT_DONE, LEADER_ELECTION_SERVER_DONE, LEADER_ANNOUNCEMENT, LEADER_ANNOUNCEMENT_ACK,
+	LEADER, PARENT, ALREADY, SERVER_LEADER, SYNC, SYNC_ACK, OVERTIME, SEARCHING_CLIENT, CLIENT_FOUND, PRINT};
+
+enum register_type {IN, OUT};
+enum directions {LEFT, TOP, BOTTOM, RIGHT};
 
 int main(int argc, char** argv) {	
 	int neighbours[MAX_NEIGHBOURS], received_from_neighbours[MAX_NEIGHBOURS], neighbours_i = 0;
@@ -130,7 +131,7 @@ int main(int argc, char** argv) {
 					break;
 
 				case ACK:
-					printf("received ack from %d\n", senter_rank);
+					printf("Rank %d received <ACK>(for register) from server %d\n", senter_rank);
 					MPI_Send(&dummy, 1, MPI_INT, 0, ACK, MPI_COMM_WORLD);
 					break;
 
@@ -235,7 +236,9 @@ int main(int argc, char** argv) {
 	
 		struct RegisterMessage requests[100];
 		int request_i = 0, total_hours = 0, received_sync_acks = 0;
-		
+		int register_clients_cnt = 0, client_in_out_pairs_cnt = 0;	
+		double work_hours = 0;
+
 		int blocklengths[4]   = {1, 1, 1, 20};
 		MPI_Datatype types[4] = {MPI_INT, MPI_INT, MPI_INT, MPI_CHAR};
 		MPI_Aint offsets[4];
@@ -388,14 +391,22 @@ int main(int argc, char** argv) {
 						int s = request_cnt%num_of_servers+1;
 						register_data.responsibleServer = s;
 						if(s == leader) {
+							if(isClientExistAsRegistered(requests, request_i, register_data.client) == 0) {
+								printf("Rank %d client %d doesnt exists to any of my registers.Added!\n", world_rank, register_data.client);
+								register_clients_cnt += 1;	
+							}
 							requests[request_i++] = register_data;
-							MPI_Send(&register_data, 1, struct_type, requests[request_i].client, ACK, MPI_COMM_WORLD);
+							MPI_Send(&register_data, 1, struct_type, requests[request_i-1].client, ACK, MPI_COMM_WORLD);
 						}
 						else MPI_Send(&register_data, 1, struct_type, my_next_server, REGISTER, MPI_COMM_WORLD);
 					}		
 					else {
 						if(register_data.responsibleServer == world_rank) {
 							//printf("Rank %d i will save the request!\n", world_rank);
+							if(isClientExistAsRegistered(requests, request_i, register_data.client) == 0) {
+								printf("Rank %d client %d doesnt exists to any of my registers.Added!\n", world_rank, register_data.client);
+								register_clients_cnt += 1;	
+							}
 							requests[request_i++] = register_data;
 							//printf("requested client %d\n", requests[request_i].client);
 							MPI_Send(&register_data, 1, struct_type, requests[request_i].client, ACK, MPI_COMM_WORLD);
@@ -417,7 +428,7 @@ int main(int argc, char** argv) {
 						struct SyncMessage message;
 						struct tm tm1 = {0}, tm2 = {0};	
 						time_t t1 = {0}, t2 = {0};
-						int work_hours = 0, found = 0;
+						int found = 0;
 						double time;
 						for(int i = 0; i < request_i; i++) {
 							strptime(requests[i].timestamp, "%H:%M:%S %d/%m/%Y", &tm1);
@@ -426,6 +437,7 @@ int main(int argc, char** argv) {
 							for(int j = 0; j < request_i; j++) {
 								if(requests[j].client == requests[i].client && requests[j].type != requests[i].type) {
 									found = 1;
+									client_in_out_pairs_cnt += 1;
 									strptime(requests[j].timestamp, "%H:%M:%S %d/%m/%Y", &tm2);
 									t2 = mktime(&tm2);
 									if(requests[j].type == OUT) {
@@ -436,7 +448,10 @@ int main(int argc, char** argv) {
 										time = difftime(t1, t2)/3600;
 										work_hours += time;
 									}
-									printf("Rank %d - client %d | diff time = %lf\n", world_rank, requests[j].client, time);
+									//printf("Rank %d - client %d | diff time = %lf\n", world_rank, requests[j].client, time);
+									if(client_in_out_pairs_cnt == register_clients_cnt) {
+										MPI_Send(&searching_client, 1, search_client_struct_type, leader, SYNC_ACK, MPI_COMM_WORLD);
+									}
 									break;
 								}
 							}
@@ -447,9 +462,9 @@ int main(int argc, char** argv) {
 								MPI_Send(&searching_client, 1, search_client_struct_type, my_next_server, SEARCHING_CLIENT, MPI_COMM_WORLD);
 							}
 						}
-						message.request_cnt = request_i;
-						message.hours 	    = work_hours;						
-						MPI_Send(&message, 1, sync_struct_type, senter_rank, SYNC_ACK, MPI_COMM_WORLD);
+						//message.request_cnt = request_i;
+						//message.hours 	    = work_hours;						
+						//MPI_Send(&message, 1, sync_struct_type, senter_rank, SYNC_ACK, MPI_COMM_WORLD);
 						for(int i = 0; i < children_i; i++) {
 							if(children[children_i] == senter_rank) continue;
 							MPI_Send(&sync_data, 1, sync_struct_type, children[i], SYNC, MPI_COMM_WORLD);
@@ -477,7 +492,36 @@ int main(int argc, char** argv) {
 				case CLIENT_FOUND:
 					printf("Rank %d received <CLIENT_FOUND> from %d\n", world_rank, senter_rank);
 					if(world_rank == searching_client.source) {
+						client_in_out_pairs_cnt += 1;
+						printf("Rank %d | in_out_pairs = %d | total clients = %d\n", world_rank, client_in_out_pairs_cnt, register_clients_cnt);
+						struct tm tm1 = {0}, tm2 = {0};	
+						time_t t1 = {0}, t2 = {0};
+						double time;
+						strptime(searching_client.timestamp, "%H:%M:%S %d/%m/%Y", &tm1);
+						t1 = mktime(&tm1);
+						for(int i = 0; i < request_i; i++) {
+							if(searching_client.client == requests[i].client) {
+								printf("++++++++++++++++++++++++++++++++++++++++++\n");
+								strptime(requests[i].timestamp, "%H:%M:%S %d/%m/%Y", &tm2);
+								t2 = mktime(&tm2);
+								if(requests[i].type == OUT) {
+									time = difftime(t2, t1)/3600;
+									work_hours += time;
+								}
+								else {
+									time = difftime(t1, t2)/3600;
+									work_hours += time;
+								}
+								break;
+							}
+						}
 						printf("Rank %d | missing timestamp of client %d is %s\n", world_rank, searching_client.client, searching_client.timestamp);
+						if(client_in_out_pairs_cnt == register_clients_cnt) { //all client hours are found/computed
+							sync_data.request_cnt = request_i;
+							sync_data.hours       = work_hours;
+							printf("Rank %d TOTAL WORK HOURS %lf\n", world_rank, work_hours);
+							MPI_Send(&sync_data, 1, sync_struct_type, parent, SYNC_ACK, MPI_COMM_WORLD);
+						}
 					}
 					else {
 						MPI_Send(&searching_client, 1, search_client_struct_type, my_next_server, CLIENT_FOUND, MPI_COMM_WORLD);
@@ -485,52 +529,57 @@ int main(int argc, char** argv) {
 					break;
 
 				case SYNC_ACK:
-					received_sync_acks++;
-					printf("Rank %d received %d requests and hour %d\n", world_rank, sync_data.request_cnt, sync_data.hours);
-					if(world_rank == leader) {
+					printf("Rank %d received <SYNC_ACK> from %d\n", world_rank, senter_rank);
+					if(world_rank != leader) {
+						MPI_Send(&sync_data, 1, sync_struct_type, parent, SYNC_ACK, MPI_COMM_WORLD);
+					} else {
+						received_sync_acks++;
 						total_hours += sync_data.hours;
 						total_req   += sync_data.request_cnt;
-						if(received_sync_acks == num_of_servers-1) { 
-							struct SyncMessage message;
-							struct tm tm1 = {0}, tm2 = {0};	
-							time_t t1 = {0}, t2 = {0};
-							int work_hours = 0;
-							for(int i = 0; i < request_i; i++) {
-								strptime(requests[i].timestamp, "%H:%M:%S %d/%m/%Y", &tm1);
-								t1 = mktime(&tm1);
-								for(int j = 0; j < request_i; j++) {
-									if(requests[j].client == requests[i].client) {
-										if(requests[j].type == OUT) {
-											strptime(requests[j].timestamp, "%H:%M:%S %d/%m/%Y", &tm2);
-											t2 = mktime(&tm2);
-											double time = difftime(t2, t1)/3600;
-											work_hours += time;
-											printf("Rank %d - client %d | diff time = %lf\n", world_rank, requests[j].client, time);
+						if(world_rank == leader) {
+							total_hours += sync_data.hours;
+							total_req   += sync_data.request_cnt;
+							if(received_sync_acks == num_of_servers-1) { 
+								struct SyncMessage message;
+								struct tm tm1 = {0}, tm2 = {0};	
+								time_t t1 = {0}, t2 = {0};
+								for(int i = 0; i < request_i; i++) {
+									strptime(requests[i].timestamp, "%H:%M:%S %d/%m/%Y", &tm1);
+									t1 = mktime(&tm1);
+									for(int j = 0; j < request_i; j++) {
+										if(requests[j].client == requests[i].client && requests[j].type != requests[i].type) {
+											if(requests[j].type == OUT) {
+												strptime(requests[j].timestamp, "%H:%M:%S %d/%m/%Y", &tm2);
+												t2 = mktime(&tm2);
+												double time = difftime(t2, t1)/3600;
+												work_hours += time;
+												//printf("Rank %d - client %d | diff time = %lf\n", world_rank, requests[j].client, time);
+											}
+											else {
+												strptime(requests[j].timestamp, "%H:%M:%S %d/%m/%Y", &tm2);
+												t2 = mktime(&tm2);
+												double time = difftime(t1, t2)/3600;
+												work_hours += time;
+												//printf("Rank %d + client %d | diff time = %lf\n", world_rank, requests[j].client, time);
+											}
+											break;
 										}
-										else {
-											strptime(requests[j].timestamp, "%H:%M:%S %d/%m/%Y", &tm2);
-											t2 = mktime(&tm2);
-											double time = difftime(t1, t2)/3600;
-											work_hours += time;
-											printf("Rank %d + client %d | diff time = %lf\n", world_rank, requests[j].client, time);
-										}
-										break;
 									}
 								}
+								total_hours += work_hours;
+								total_req   += request_i;
+								printf("%sServer Leader received %d <SYNC ACKS>. Including: %ld hours and %d requests%s\n", KCYN, received_sync_acks, total_hours, total_req, KWHT);							
+								MPI_Send(&dummy, 1, MPI_INT, 0, ACK, MPI_COMM_WORLD);
 							}
-							total_hours += work_hours;
-							total_req   += request_i;
-							MPI_Send(&dummy, 1, MPI_INT, 0, ACK, MPI_COMM_WORLD);
-							printf("%sServer Leader received %d <SYNC ACKS>. Including: %d hours and %d requests%s\n", KCYN, received_sync_acks, total_hours, total_req, KWHT);
 						}
-					}
-					else {
-						MPI_Send(&sync_data, 1, sync_struct_type, parent, SYNC_ACK, MPI_COMM_WORLD);
 					}
 					break;
 
 				case OVERTIME:
 					printf("Rank %d received <OVERTIME>\n", world_rank);
+					break;
+
+				case PRINT:
 					break;
 			}
 		}
@@ -538,6 +587,13 @@ int main(int argc, char** argv) {
 
 	// Finalize the MPI environmen
 	MPI_Finalize();
+}
+
+int isClientExistAsRegistered(struct RegisterMessage *requests, int size, int client) {
+	for(int i = 0; i < size; i++) {
+		if(requests[i].client == client) return 1;	
+	}
+	return 0;
 }
 
 int explore(int *unexplored, int world_rank, int parent, int leader, int exception) {
@@ -661,12 +717,15 @@ void exec_test_file(char* test_file_name, int num_of_servers, int world_size) {
 			MPI_Recv(&dummy, 1, MPI_INT, servers_leader_rank, ACK , MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 			printf("%sLEADER SYNC OK%s\n", KGRN, KWHT);	
 		}
-		else if(strcmp(token, "OVERTIME")==0){
+		else if(strcmp(token, "_OVERTIME")==0){
 			printf("==OVERTIME EVENT STARTED==\n");
 			int server_rank = atoi(strtok(NULL, delims));
 			char date[10];
 			strcpy(date, strtok(NULL, delims));
 			MPI_Send(date, 10, MPI_CHAR, server_rank, OVERTIME, MPI_COMM_WORLD);
+		}
+		else if(strcmp(token, "_PRINT")==0) {
+		
 		}
             	token = strtok(NULL, delims);
         }

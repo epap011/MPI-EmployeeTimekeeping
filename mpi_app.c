@@ -49,7 +49,7 @@ int isClientExistAsRegistered(struct RegisterMessage *requests, int size, int cl
 
 enum message_type {CONNECT, REGISTER, START_LEADER_ELECTION_CLIENTS, START_LEADER_ELECTION_SERVERS, ELECT, LEADER_BATTLE, 
 	NEW_NEIGHBOUR, ACK, LEADER_ELECTION_CLIENT_DONE, LEADER_ELECTION_SERVER_DONE, LEADER_ANNOUNCEMENT, LEADER_ANNOUNCEMENT_ACK,
-	LEADER, PARENT, ALREADY, SERVER_LEADER, SYNC, SYNC_ACK, OVERTIME, SEARCHING_CLIENT, CLIENT_FOUND, PRINT};
+	LEADER, CLIENT_LEADER, PARENT, ALREADY, SERVER_LEADER, SYNC, SYNC_ACK, OVERTIME, SEARCHING_CLIENT, CLIENT_FOUND, PRINT, PRINT_ACK};
 
 enum register_type {IN, OUT};
 enum directions {LEFT, TOP, BOTTOM, RIGHT};
@@ -75,10 +75,17 @@ int main(int argc, char** argv) {
 	// Get the rank of process
 	int world_rank;
 	MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-	
-	int rec_data, rec_tag, dummy = 0, neighbour_rank, sent_elect_count = 0, received_elect_count = 0, senter_rank, i_received_from_neighbours = 0;
+
+	MPI_File file;
+	int rc = MPI_File_open(MPI_COMM_WORLD, "info.txt", MPI_MODE_CREATE|MPI_MODE_WRONLY|MPI_MODE_APPEND, MPI_INFO_NULL, &file);
+	if(rc) {
+       		printf( "Unable to open file\n" );
+  	}
+
+
+	int rec_data, rec_tag, dummy = 0, neighbour_rank, sent_elect_count = 0, received_elect_count = 0, senter_rank, i_received_from_neighbours = 0, print_acks_cnt, print_senter;
 	int client_leader_rank = -1, server_leader_rank = -1, leader_announcement_received_acks = 0, leader_announcement_senter;
-	
+
 	struct RegisterMessage register_data;
 
 	int my_next_server, request_cnt = 0;
@@ -86,6 +93,7 @@ int main(int argc, char** argv) {
 	MPI_Status status;
 	if(world_rank == 0) { //coordinator code
 		exec_test_file(argv[2], num_of_servers, world_size);
+		MPI_File_close(&file);
 		while(1){}
 	}
 	else if(world_rank > num_of_servers) { //clients code
@@ -215,8 +223,8 @@ int main(int argc, char** argv) {
 
 				case REGISTER:
 //					printf("Rank %d received <REGISTER> of type %d and timestamp %s\n", world_rank, register_data.type, register_data.timestamp);
+					if(senter_rank == 0) request_cnt += 1;
 					if(world_rank == client_leader_rank) {
-						request_cnt++;
 						printf("Leader %d received <REGISTER>!!\n", world_rank);
 						MPI_Send(&register_data, 1, struct_type, server_leader_rank, REGISTER, MPI_COMM_WORLD);
 					}
@@ -229,6 +237,40 @@ int main(int argc, char** argv) {
 						}
 					}
 					break;
+
+				case PRINT:
+					printf("Rank %d received <PRINT>\n", world_rank);
+					print_senter = senter_rank;
+					char buf[100] = {0};
+					sprintf(buf, "CLIENT %d PROCESSED %d REQUESTS\n", world_rank, request_cnt);
+					MPI_File_write_shared(file, buf, 100, MPI_CHAR, MPI_STATUS_IGNORE);	
+					if(neighbours_i == 1) {
+						MPI_Send(&dummy, 1, MPI_INT, senter_rank, PRINT_ACK, MPI_COMM_WORLD);
+					}
+					else {
+						for(int i = 0; i < MAX_NEIGHBOURS; i++) {
+							if(neighbours[i] == -1) break;
+							if(neighbours[i] == senter_rank) continue;
+							MPI_Send(&dummy, 1, MPI_INT, neighbours[i], PRINT, MPI_COMM_WORLD);
+						}
+					}
+					break;
+
+				case PRINT_ACK:
+					print_acks_cnt += 1;
+					if(world_rank == client_leader_rank) {
+						if(print_acks_cnt == number_of_neighbours) {
+							printf("Rank %d (client-leader) received %d <PRINT_ACKS>\n", world_rank, print_acks_cnt); 
+							MPI_Send(&dummy, 1, MPI_INT, 0, PRINT_ACK, MPI_COMM_WORLD);		
+						}
+					}
+					else {
+						if(print_acks_cnt == number_of_neighbours-1) {
+							MPI_Send(&dummy, 1, MPI_INT, print_senter, PRINT_ACK, MPI_COMM_WORLD);
+						}
+					}
+					break;
+
 			}
 		}
 	}
@@ -270,7 +312,7 @@ int main(int argc, char** argv) {
 		MPI_Type_commit(&search_client_struct_type);
 
 
-		int children[4], my_next_server, *neighbours, parent = world_rank, children_i = 0, leader = world_rank, total_req = 0;	
+		int children[4], my_next_server, *neighbours, parent = world_rank, children_i = 0, client_leader, leader = world_rank, total_req = 0, print_acks_cnt = 0;	
 		init_array(children, 4);
 		neighbours     = init_torus_neighbours(world_rank, servers_num_arg);
 		my_next_server = find_my_next_server(world_rank, servers_num_arg);
@@ -338,6 +380,10 @@ int main(int argc, char** argv) {
 						leader = rec_data;
 						MPI_Send(&leader, 1, MPI_INT, my_next_server, LEADER_ANNOUNCEMENT, MPI_COMM_WORLD);
 					}
+					break;
+
+				case CLIENT_LEADER:
+					client_leader = rec_data;
 					break;
 
 				case LEADER:
@@ -580,6 +626,29 @@ int main(int argc, char** argv) {
 					break;
 
 				case PRINT:
+					printf("Rank %d received <PRINT> children = %d\n", world_rank, children_i);
+					char buf[100] = {0};
+					sprintf(buf, "SERVER %d HAS %d RECORDS with %d HOURS\n", world_rank, request_i, work_hours);
+					MPI_File_write_shared(file, buf, 100, MPI_CHAR, MPI_STATUS_IGNORE);	
+					for(int i = 0; i < children_i; i++) {
+						if(children[i] == -1) break;
+						MPI_Send(&dummy, 1, MPI_INT, children[i], PRINT, MPI_COMM_WORLD);
+					}
+					MPI_Send(&dummy, 1, MPI_INT, senter_rank, PRINT_ACK, MPI_COMM_WORLD);
+					break;
+
+				case PRINT_ACK:
+					if(world_rank == leader) {
+						print_acks_cnt += 1;
+						printf("print_acks_cnt = %d\n", print_acks_cnt);
+						if(print_acks_cnt == num_of_servers-1) {
+							printf("Rank %d (server-leader) received %d <PRINT_ACKS>\n", world_rank, print_acks_cnt); 
+							MPI_Send(&dummy, 1, MPI_INT, client_leader, PRINT, MPI_COMM_WORLD);		
+						}
+					}
+					else {
+						MPI_Send(&dummy, 1, MPI_INT, parent, PRINT_ACK, MPI_COMM_WORLD);
+					}
 					break;
 			}
 		}
@@ -668,6 +737,9 @@ void exec_test_file(char* test_file_name, int num_of_servers, int world_size) {
 			}
 			MPI_Recv(&clients_leader_rank, 1, MPI_INT, MPI_ANY_SOURCE, LEADER_ELECTION_CLIENT_DONE, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 			printf("Coordinator received <LEADER_ELECTION_CLIENT_DONE> | client leader %d\n", clients_leader_rank);
+			for(int i = 1; i <= num_of_servers; i++) {
+				MPI_Send(&clients_leader_rank, 1, MPI_INT, i, CLIENT_LEADER, MPI_COMM_WORLD);
+			}
 		}
 		else if(strcmp(token, "REGISTER")==0) {
 			client_rank = atoi(strtok(NULL, delims));
@@ -724,8 +796,10 @@ void exec_test_file(char* test_file_name, int num_of_servers, int world_size) {
 			strcpy(date, strtok(NULL, delims));
 			MPI_Send(date, 10, MPI_CHAR, server_rank, OVERTIME, MPI_COMM_WORLD);
 		}
-		else if(strcmp(token, "_PRINT")==0) {
-		
+		else if(strcmp(token, "PRINT")==0) {
+			MPI_Send(&dummy, 1, MPI_INT, servers_leader_rank, PRINT, MPI_COMM_WORLD);
+			MPI_Recv(&dummy, 1, MPI_INT, clients_leader_rank, PRINT_ACK, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			printf("Coordinator received <ACK>(PRINT) from client leader\n"); 
 		}
             	token = strtok(NULL, delims);
         }

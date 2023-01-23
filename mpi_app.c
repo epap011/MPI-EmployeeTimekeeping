@@ -49,14 +49,14 @@ int isClientExistAsRegistered(struct RegisterMessage *requests, int size, int cl
 
 enum message_type {CONNECT, REGISTER, START_LEADER_ELECTION_CLIENTS, START_LEADER_ELECTION_SERVERS, ELECT, LEADER_BATTLE, 
 	NEW_NEIGHBOUR, ACK, LEADER_ELECTION_CLIENT_DONE, LEADER_ELECTION_SERVER_DONE, LEADER_ANNOUNCEMENT, LEADER_ANNOUNCEMENT_ACK,
-	LEADER, CLIENT_LEADER, PARENT, ALREADY, SERVER_LEADER, SYNC, SYNC_ACK, OVERTIME, SEARCHING_CLIENT, CLIENT_FOUND, PRINT, PRINT_ACK};
+	LEADER, CLIENT_LEADER, PARENT, ALREADY, SERVER_LEADER, SYNC, SYNC_ACK, OVERTIME, SEARCHING_CLIENT, CLIENT_FOUND, PRINT, PRINT_ACK, TERMINATE};
 
 enum register_type {IN, OUT};
 enum directions {LEFT, TOP, BOTTOM, RIGHT};
 
 int main(int argc, char** argv) {	
 	int neighbours[MAX_NEIGHBOURS], received_from_neighbours[MAX_NEIGHBOURS], neighbours_i = 0;
-	int number_of_neighbours = 0;
+	int number_of_neighbours = 0, terminate = 0;
 
 	if(argc != 3) {
 		printf("[ERROR] Invalid number of arguments..\n");
@@ -82,8 +82,7 @@ int main(int argc, char** argv) {
        		printf( "Unable to open file\n" );
   	}
 
-
-	int rec_data, rec_tag, dummy = 0, neighbour_rank, sent_elect_count = 0, received_elect_count = 0, senter_rank, i_received_from_neighbours = 0, print_acks_cnt, print_senter;
+	int rec_data, rec_tag, dummy = 0, neighbour_rank, sent_elect_count = 0, received_elect_count = 0, senter_rank, i_received_from_neighbours = 0, print_acks_cnt=0, print_senter;
 	int client_leader_rank = -1, server_leader_rank = -1, leader_announcement_received_acks = 0, leader_announcement_senter;
 
 	struct RegisterMessage register_data;
@@ -94,7 +93,6 @@ int main(int argc, char** argv) {
 	if(world_rank == 0) { //coordinator code
 		exec_test_file(argv[2], num_of_servers, world_size);
 		MPI_File_close(&file);
-		while(1){}
 	}
 	else if(world_rank > num_of_servers) { //clients code
 		int blocklengths[4]   = {1, 1, 1, 20};
@@ -110,7 +108,7 @@ int main(int argc, char** argv) {
 
 		init_array(neighbours, MAX_NEIGHBOURS);
 		init_array(received_from_neighbours, MAX_NEIGHBOURS);
-		while(1) {
+		while(!terminate) {
 			MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 			rec_tag = status.MPI_TAG;
 			senter_rank = status.MPI_SOURCE;
@@ -258,7 +256,9 @@ int main(int argc, char** argv) {
 
 				case PRINT_ACK:
 					print_acks_cnt += 1;
+					printf("Rank %d received ACK from neighbour %d, acks received %d/%d\n", world_rank, senter_rank, print_acks_cnt, number_of_neighbours);
 					if(world_rank == client_leader_rank) {
+						printf("Rank %d(client-leader) received ACK from neighbour %d\n", world_rank, senter_rank);
 						if(print_acks_cnt == number_of_neighbours) {
 							printf("Rank %d (client-leader) received %d <PRINT_ACKS>\n", world_rank, print_acks_cnt); 
 							MPI_Send(&dummy, 1, MPI_INT, 0, PRINT_ACK, MPI_COMM_WORLD);		
@@ -266,10 +266,17 @@ int main(int argc, char** argv) {
 					}
 					else {
 						if(print_acks_cnt == number_of_neighbours-1) {
+							printf("Rank %d will send PRINT_ACK to %d\n", world_rank, print_senter);
 							MPI_Send(&dummy, 1, MPI_INT, print_senter, PRINT_ACK, MPI_COMM_WORLD);
 						}
 					}
 					break;
+
+				case TERMINATE:
+					printf("Rank %d received <TERMINATE> from coordinator\n", world_rank);
+					terminate = 1;
+					break;
+
 
 			}
 		}
@@ -334,7 +341,7 @@ int main(int argc, char** argv) {
 			unexplored[RIGHT]  = neighbours[RIGHT];
 		}
 
-		while(1) {
+		while(!terminate) {
 			MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 			rec_tag = status.MPI_TAG;
 			senter_rank = status.MPI_SOURCE;
@@ -614,7 +621,7 @@ int main(int argc, char** argv) {
 								}
 								total_hours += work_hours;
 								total_req   += request_i;
-								printf("%sServer Leader received %d <SYNC ACKS>. Including: %ld hours and %d requests%s\n", KCYN, received_sync_acks, total_hours, total_req, KWHT);							
+								printf("%sServer Leader received %d <SYNC ACKS>. Including: %ld hours%s\n", KCYN, received_sync_acks, total_hours, KWHT);							
 								MPI_Send(&dummy, 1, MPI_INT, 0, ACK, MPI_COMM_WORLD);
 							}
 						}
@@ -628,7 +635,7 @@ int main(int argc, char** argv) {
 				case PRINT:
 					printf("Rank %d received <PRINT> children = %d\n", world_rank, children_i);
 					char buf[100] = {0};
-					sprintf(buf, "SERVER %d HAS %d RECORDS with %d HOURS\n", world_rank, request_i, work_hours);
+					sprintf(buf, "SERVER %d HAS %d RECORDS with %ld HOURS\n", world_rank, request_i, work_hours);
 					MPI_File_write_shared(file, buf, 100, MPI_CHAR, MPI_STATUS_IGNORE);	
 					for(int i = 0; i < children_i; i++) {
 						if(children[i] == -1) break;
@@ -650,12 +657,18 @@ int main(int argc, char** argv) {
 						MPI_Send(&dummy, 1, MPI_INT, parent, PRINT_ACK, MPI_COMM_WORLD);
 					}
 					break;
+
+				case TERMINATE:
+					printf("Rank %d received <TERMINATE> from coordinator\n", world_rank);
+					terminate = 1;
+					break;
 			}
 		}
 	}
 
-	// Finalize the MPI environmen
+	// Finalize the MPI environment
 	MPI_Finalize();
+	exit(EXIT_SUCCESS);
 }
 
 int isClientExistAsRegistered(struct RegisterMessage *requests, int size, int client) {
@@ -803,8 +816,10 @@ void exec_test_file(char* test_file_name, int num_of_servers, int world_size) {
 		}
             	token = strtok(NULL, delims);
         }
-
+	printf("======= FILE EXECUTION COMPLETED ========\n");
 	fclose(fp);
+	//send termination message to other processes
+	for(int i = 1; i < world_size; i++) MPI_Send(&dummy, 1, MPI_INT, i, TERMINATE, MPI_COMM_WORLD);
 }
 
 void clear_char_array(char *array, int size) {

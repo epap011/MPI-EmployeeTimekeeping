@@ -274,7 +274,6 @@ int main(int argc, char** argv) {
 		
 		int *unexplored    = (int*)malloc(sizeof(int)*4);
 		char overtime[10], timestamp[20];
-		char lost_clients[100][20];
 		struct SyncMessage sync_data;
 		struct SearchingClientTimestampMessage searching_client; 
 		if(servers_num_arg == 2) {
@@ -419,38 +418,33 @@ int main(int argc, char** argv) {
 						struct tm tm1 = {0}, tm2 = {0};	
 						time_t t1 = {0}, t2 = {0};
 						int work_hours = 0, found = 0;
+						double time;
 						for(int i = 0; i < request_i; i++) {
 							strptime(requests[i].timestamp, "%H:%M:%S %d/%m/%Y", &tm1);
 							t1 = mktime(&tm1);
 							printf("Rank %d has register of client %d type %d\n", world_rank, requests[i].client, requests[i].type);
-							
 							for(int j = 0; j < request_i; j++) {
 								if(requests[j].client == requests[i].client && requests[j].type != requests[i].type) {
 									found = 1;
+									strptime(requests[j].timestamp, "%H:%M:%S %d/%m/%Y", &tm2);
+									t2 = mktime(&tm2);
 									if(requests[j].type == OUT) {
-										strptime(requests[j].timestamp, "%H:%M:%S %d/%m/%Y", &tm2);
-										t2 = mktime(&tm2);
-										double time = difftime(t2, t1)/3600;
+										time = difftime(t2, t1)/3600;
 										work_hours += time;
-										printf("Rank %d - client %d | diff time = %lf\n", world_rank, requests[j].client, time);
 									}
 									else {
-										strptime(requests[j].timestamp, "%H:%M:%S %d/%m/%Y", &tm2);
-										t2 = mktime(&tm2);
-										double time = difftime(t1, t2)/3600;
+										time = difftime(t1, t2)/3600;
 										work_hours += time;
-										printf("Rank %d + client %d | diff time = %lf\n", world_rank, requests[j].client, time);
 									}
+									printf("Rank %d - client %d | diff time = %lf\n", world_rank, requests[j].client, time);
 									break;
 								}
 							}
-							if(found == 0) {
+							if(found == 0) { //IN OR OUT of some client is not registered on my server
 								int client = requests[i].client;
 								searching_client.source = world_rank;
 								searching_client.client = client;
 								MPI_Send(&searching_client, 1, search_client_struct_type, my_next_server, SEARCHING_CLIENT, MPI_COMM_WORLD);
-								MPI_Recv(&searching_client, 1, search_client_struct_type, MPI_ANY_SOURCE, CLIENT_FOUND, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-								printf("Rank %d lost timestamp of client %d is %s\n", world_rank, client, searching_client.timestamp);
 							}
 						}
 						message.request_cnt = request_i;
@@ -468,7 +462,7 @@ int main(int argc, char** argv) {
 					int found = 0;
 
 					for(int i = 0; i < request_i; i++) {
-						if(requests[i].client, searching_client.client) {
+						if(requests[i].client == searching_client.client) {
 							found = 1;
 							strcpy(searching_client.timestamp, requests[i].timestamp);
 							MPI_Send(&searching_client, 1, search_client_struct_type, my_next_server, CLIENT_FOUND, MPI_COMM_WORLD);
@@ -482,7 +476,12 @@ int main(int argc, char** argv) {
 
 				case CLIENT_FOUND:
 					printf("Rank %d received <CLIENT_FOUND> from %d\n", world_rank, senter_rank);
-					MPI_Send(&searching_client, 1, search_client_struct_type, my_next_server, CLIENT_FOUND, MPI_COMM_WORLD);
+					if(world_rank == searching_client.source) {
+						printf("Rank %d | missing timestamp of client %d is %s\n", world_rank, searching_client.client, searching_client.timestamp);
+					}
+					else {
+						MPI_Send(&searching_client, 1, search_client_struct_type, my_next_server, CLIENT_FOUND, MPI_COMM_WORLD);
+					}
 					break;
 
 				case SYNC_ACK:

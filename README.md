@@ -23,6 +23,8 @@ When this message is received, the coordinator process sends a message of type
 processes clients, informing them of their role as clients, as well as the
 ID of the elected leader server.
 
+![Alt text](assets/images/tree.png?raw=true "Figure 1: an examples of client processes tree")
+
 **<START_LEADER_ELECTION_CLIENTS>**
 The coordinator sends a message of type <START_LEADER_ELECTION_CLIENT> in each client process present in the system and
 then waits to receive a message of type <LEADER_ELECTION_CLIENTS_DONE> from
@@ -30,6 +32,8 @@ process to elect a leader.
 When this message is received, the coordinator process sends a message of type
 <CLIENT_LEADER> containing the ID of the client leader in all processes
 servers, informing them of the ID of the elected leader client.
+
+![Alt text](assets/images/torus.png?raw=true "Figure 1: an examples of server processes torus")
 
 **REGISTER <client_rank> <TYPE> <TIMESTAMP>** 
 Coordinator sends a register request to the client with identifier <client_rank> of type <TYPE> with date and

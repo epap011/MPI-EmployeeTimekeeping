@@ -81,6 +81,10 @@ the same process takes place, but in the client process tree this time.
 Each client process that receives the master message must print to a file:
 CLIENT <client_rank> PROCESSED <request_count> REQUESTS
   
+**Termination**
+Coordinator sends a message of type <TERMINATE> to all other processes so that it informs them about it
+system shutdown.
+  
   
   
   

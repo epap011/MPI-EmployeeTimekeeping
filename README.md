@@ -1,4 +1,6 @@
 # MPI EmployeeTimekeeping - DistributedSystem
+CS486 - Principles of Distributed Computing - Assignment
+
 a distributed system employee timekeeping, which will manage employee entry and exit events from the workplace.
 The project is implemented in C language using of the Message Passing Interface (MPI).
 
